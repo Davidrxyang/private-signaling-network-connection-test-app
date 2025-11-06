@@ -10,19 +10,32 @@ import org.json.JSONObject
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.SocketTimeoutException
+import kotlin.math.max
 import kotlin.time.Duration.Companion.seconds
 
 private const val TAG = "TCPClient"
 
+/**
+ * TCP client with configurable send period and optional periodic connection resets.
+ *
+ * @param periodMs Message interval in milliseconds (>=100ms)
+ * @param resetEverySec If >0, close socket and reconnect every X seconds
+ * @param resetDowntimeSec Seconds to sleep between closing and reconnecting
+ */
 suspend fun runTcpClient(
     host: String,
     port: Int = 8000,
     periodMs: Long = 1000L,
     connectTimeoutMs: Int = 3000,
-    readTimeoutMs: Int = 1500
+    readTimeoutMs: Int = 1500,
+    resetEverySec: Long = 0L,
+    resetDowntimeSec: Long = 0L
 ) {
+    val minPeriod = max(100L, periodMs)
     var attempt = 0
     while (true) {
+        var didReset = false
+        val connectStart = System.nanoTime()
         try {
             Socket().use { sock ->
                 sock.connect(InetSocketAddress(host, port), connectTimeoutMs)
@@ -33,7 +46,7 @@ suspend fun runTcpClient(
                 val out = sock.getOutputStream().bufferedWriter()
                 val inp = sock.getInputStream().bufferedReader()
 
-                Log.i(TAG, "Connected to $host:$port")
+                Log.i(TAG, "Connected to $host:$port (period=${minPeriod}ms resetEvery=${resetEverySec}s downtime=${resetDowntimeSec}s)")
 
                 supervisorScope {
                     // Writer: trigger one server reply per heartbeat
@@ -44,7 +57,7 @@ suspend fun runTcpClient(
                             out.write(msg); out.flush()
                             Log.i(TAG, "TX: ${msg.trim()}")
                             seq++
-                            delay(periodMs)
+                            delay(minPeriod)
                         }
                     }
 
@@ -75,18 +88,50 @@ suspend fun runTcpClient(
                         }
                     }
 
-                    try { while (isActive) delay(5.seconds) }
-                    finally { writer.cancel(); reader.cancel() }
+                    // Watchdog for timed reset
+                    val watchdog = launch {
+                        if (resetEverySec > 0) {
+                            val millis = resetEverySec * 1000L
+                            var waited = 0L
+                            while (isActive && waited < millis) {
+                                delay(200L)
+                                waited += 200L
+                            }
+                            if (isActive) {
+                                didReset = true
+                                Log.i(TAG, "Timed reset after ${resetEverySec}s")
+                            }
+                        }
+                    }
+
+                    try {
+                        // Loop until reset triggers or coroutine cancelled
+                        while (isActive) {
+                            if (didReset) break
+                            delay(200L)
+                        }
+                    } finally {
+                        writer.cancel(); reader.cancel(); watchdog.cancel()
+                    }
                 }
             }
             attempt = 0
         } catch (ce: CancellationException) {
             throw ce
         } catch (e: Exception) {
-            attempt++
-            val backoffMs = (500L * attempt).coerceAtMost(5000L)
-            Log.e(TAG, "TCP error: ${e.message} (attempt $attempt). Reconnecting in ${backoffMs}ms", e)
-            delay(backoffMs)
+            if (!didReset) {
+                attempt++
+                val backoffMs = (500L * attempt).coerceAtMost(5000L)
+                Log.e(TAG, "TCP error: ${e.message} (attempt $attempt). Reconnecting in ${backoffMs}ms", e)
+                delay(backoffMs)
+            }
+        }
+
+        if (didReset && resetDowntimeSec > 0) {
+            Log.i(TAG, "Sleeping for ${resetDowntimeSec}s before reconnect (TCP)")
+            repeat(resetDowntimeSec.toInt()) {
+                delay(1000L)
+            }
         }
     }
 }

@@ -26,6 +26,11 @@ class MainActivity : ComponentActivity() {
             var mode by remember { mutableStateOf(Mode.TCP) }
             var udpDirection by remember { mutableStateOf(UdpDirection.BOTH) }
 
+            // New configurable intervals (seconds)
+            var periodSecText by remember { mutableStateOf("1") }
+            var resetEverySecText by remember { mutableStateOf("") } // empty = disabled
+            var resetDowntimeSecText by remember { mutableStateOf("0") }
+
             MaterialTheme {
                 Box(
                     modifier = Modifier
@@ -57,6 +62,40 @@ class MainActivity : ComponentActivity() {
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth()
                         )
+
+                        // --- Message Interval (seconds) ---
+                        OutlinedTextField(
+                            value = periodSecText,
+                            onValueChange = { t -> periodSecText = t.filter { it.isDigit() } },
+                            label = { Text("Message interval (seconds)") },
+                            placeholder = { Text("1") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
+                        // --- Connection reset settings (seconds) ---
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            OutlinedTextField(
+                                value = resetEverySecText,
+                                onValueChange = { t -> resetEverySecText = t.filter { it.isDigit() } },
+                                label = { Text("Reset every X sec (optional)") },
+                                placeholder = { Text("e.g. 30") },
+                                singleLine = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                            OutlinedTextField(
+                                value = resetDowntimeSecText,
+                                onValueChange = { t -> resetDowntimeSecText = t.filter { it.isDigit() } },
+                                label = { Text("Downtime Y sec") },
+                                placeholder = { Text("0") },
+                                singleLine = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
 
                         // --- Transport toggle (TCP / UDP) ---
                         Row(
@@ -137,6 +176,16 @@ class MainActivity : ComponentActivity() {
                                     }
                                     intent.putExtra("udpDirection", dir)
                                 }
+
+                                // Parse intervals
+                                val periodSec = periodSecText.toLongOrNull() ?: 1L
+                                val resetEverySec = resetEverySecText.toLongOrNull() ?: 0L
+                                val resetDowntimeSec = resetDowntimeSecText.toLongOrNull() ?: 0L
+
+                                intent.putExtra("periodSec", periodSec)
+                                intent.putExtra("resetEverySec", resetEverySec)
+                                intent.putExtra("resetDowntimeSec", resetDowntimeSec)
+
                                 startForegroundService(intent)
                                 isRunning = true
                             },

@@ -12,102 +12,139 @@ import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.SocketTimeoutException
 import kotlin.coroutines.coroutineContext
+import kotlin.math.max
 
 private const val UDP_TAG = "UDPClient"
 
 /**
- * UDP client with three directions:
- *  - CLIENT_TO_SERVER: send periodic heartbeats only
- *  - SERVER_TO_CLIENT: send a ONE-TIME "prime" datagram, then receive-only
- *  - BOTH: send heartbeats and also receive
+ * UDP client with three directions and configurable send period and optional
+ * periodic connection resets.
+ *
+ * @param host Server hostname
+ * @param port UDP port (default 8000)
+ * @param periodMs Message interval in milliseconds (>=100ms)
+ * @param readTimeoutMs Socket receive timeout (ms)
+ * @param direction Direction mode for UDP
+ * @param resetEverySec If >0, close the socket and recreate it every X seconds
+ * @param resetDowntimeSec Seconds to sleep between closing and recreating socket
  */
 suspend fun runUdpClient(
     host: String,
     port: Int = 8000,
     periodMs: Long = 1000L,
     readTimeoutMs: Int = 1500,
-    direction: UdpDirection = UdpDirection.BOTH
+    direction: UdpDirection = UdpDirection.BOTH,
+    resetEverySec: Long = 0L,
+    resetDowntimeSec: Long = 0L
 ) {
     val addr = withContext(Dispatchers.IO) { InetAddress.getByName(host) }
+    val minPeriod = max(100L, periodMs)
 
-    DatagramSocket().use { sock ->
-        sock.soTimeout = readTimeoutMs
-        sock.connect(addr, port) // restricts receive() to server and sets default send target
-        Log.i(
-            UDP_TAG,
-            "UDP connected (pseudo) to $host:$port from ${sock.localAddress?.hostAddress}:${sock.localPort} dir=$direction"
-        )
+    while (coroutineContext.isActive) {
+        var didReset = false
+        val startNs = System.nanoTime()
 
-        var seq = 1L
-        val recvBuf = ByteArray(4096)
+        DatagramSocket().use { sock ->
+            sock.soTimeout = readTimeoutMs
+            sock.connect(addr, port) // restricts receive() and sets default target
+            Log.i(
+                UDP_TAG,
+                "UDP connected (pseudo) to $host:$port from ${sock.localAddress?.hostAddress}:${sock.localPort} dir=$direction " +
+                        "(period=${minPeriod}ms resetEvery=${resetEverySec}s downtime=${resetDowntimeSec}s)"
+            )
 
-        try {
-            // --- ONE-TIME PRIME if we are in receive-only mode ---
-            if (direction == UdpDirection.SERVER_TO_CLIENT) {
-                val prime = "PRIME from-android"
-                val primeBytes = prime.toByteArray()
-                val primePkt = DatagramPacket(primeBytes, primeBytes.size)
-                sock.send(primePkt)
-                Log.i(UDP_TAG, "TX PRIME (${primeBytes.size}B): $prime")
-                // After this, do not send periodically—receive only
-            }
+            var seq = 1L
+            val recvBuf = ByteArray(4096)
 
-            while (coroutineContext.isActive) {
-                // ---- SEND (Client → Server) ----
-                if (direction == UdpDirection.CLIENT_TO_SERVER || direction == UdpDirection.BOTH) {
-                    val payload = "HELLO seq=$seq from-android"
-                    val out = payload.toByteArray()
-                    val sendPkt = DatagramPacket(out, out.size)
-                    sock.send(sendPkt)
-                    Log.i(UDP_TAG, "TX (${out.size}B): $payload")
-                    seq++
+            try {
+                // --- ONE-TIME PRIME if we are in receive-only mode ---
+                if (direction == UdpDirection.SERVER_TO_CLIENT) {
+                    val prime = "PRIME from-android"
+                    val primeBytes = prime.toByteArray()
+                    val primePkt = DatagramPacket(primeBytes, primeBytes.size)
+                    sock.send(primePkt)
+                    Log.i(UDP_TAG, "TX PRIME (${primeBytes.size}B): $prime")
+                    // After this, do not send periodically—receive only
                 }
 
-                // ---- RECV (Server → Client) ----
-                if (direction == UdpDirection.SERVER_TO_CLIENT || direction == UdpDirection.BOTH) {
-                    val pkt = DatagramPacket(recvBuf, recvBuf.size)
-                    try {
-                        sock.receive(pkt)  // bounded by soTimeout
-                        val text = String(pkt.data, pkt.offset, pkt.length).trim()
-                        if (text.startsWith("{") && text.endsWith("}")) {
-                            try {
-                                val json = JSONObject(text)
-                                val hello = json.optString("hello", null)
-                                if (hello != null) {
-                                    Log.i(
+                while (coroutineContext.isActive) {
+                    // Optional time-based reset
+                    if (resetEverySec > 0) {
+                        val elapsedSec = (System.nanoTime() - startNs) / 1_000_000_000L
+                        if (elapsedSec >= resetEverySec) {
+                            didReset = true
+                            Log.i(UDP_TAG, "Timed reset after ${elapsedSec}s")
+                            break
+                        }
+                    }
+
+                    // ---- SEND (Client → Server) ----
+                    if (direction == UdpDirection.CLIENT_TO_SERVER || direction == UdpDirection.BOTH) {
+                        val payload = "HELLO seq=$seq from-android"
+                        val out = payload.toByteArray()
+                        val sendPkt = DatagramPacket(out, out.size)
+                        sock.send(sendPkt)
+                        Log.i(UDP_TAG, "TX (${out.size}B): $payload")
+                        seq++
+                    }
+
+                    // ---- RECV (Server → Client) ----
+                    if (direction == UdpDirection.SERVER_TO_CLIENT || direction == UdpDirection.BOTH) {
+                        val pkt = DatagramPacket(recvBuf, recvBuf.size)
+                        try {
+                            sock.receive(pkt)  // bounded by soTimeout
+                            val text = String(pkt.data, pkt.offset, pkt.length).trim()
+                            if (text.startsWith("{") && text.endsWith("}")) {
+                                try {
+                                    val json = JSONObject(text)
+                                    val hello = json.optString("hello", null)
+                                    if (hello != null) {
+                                        Log.i(
+                                            UDP_TAG,
+                                            "RX JSON from ${pkt.address.hostAddress}:${pkt.port}: hello=$hello"
+                                        )
+                                    } else {
+                                        Log.i(
+                                            UDP_TAG,
+                                            "RX JSON from ${pkt.address.hostAddress}:${pkt.port}: $json"
+                                        )
+                                    }
+                                } catch (je: Exception) {
+                                    Log.w(
                                         UDP_TAG,
-                                        "RX JSON from ${pkt.address.hostAddress}:${pkt.port}: hello=$hello"
-                                    )
-                                } else {
-                                    Log.i(
-                                        UDP_TAG,
-                                        "RX JSON from ${pkt.address.hostAddress}:${pkt.port}: $json"
+                                        "RX (not valid JSON?) ${pkt.address.hostAddress}:${pkt.port} -> $text"
                                     )
                                 }
-                            } catch (je: Exception) {
-                                Log.w(
+                            } else {
+                                Log.d(
                                     UDP_TAG,
-                                    "RX (not valid JSON?) ${pkt.address.hostAddress}:${pkt.port} -> $text"
+                                    "RX ${pkt.length}B from ${pkt.address.hostAddress}:${pkt.port}: $text"
                                 )
                             }
-                        } else {
-                            Log.d(
-                                UDP_TAG,
-                                "RX ${pkt.length}B from ${pkt.address.hostAddress}:${pkt.port}: $text"
-                            )
+                        } catch (ste: SocketTimeoutException) {
+                            // no datagram this tick; fine
                         }
-                    } catch (ste: SocketTimeoutException) {
-                        // no datagram this tick; fine
                     }
-                }
 
-                delay(periodMs)
+                    delay(minPeriod)
+                }
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                Log.e(UDP_TAG, "Error: ${t.message}", t)
+                // exit; outer loop may recreate
             }
-        } catch (ce: CancellationException) {
-            throw ce
-        } catch (t: Throwable) {
-            Log.e(UDP_TAG, "Error: ${t.message}", t)
-            // exit; service can restart if desired
+        }
+
+        if (didReset && resetDowntimeSec > 0) {
+            Log.i(UDP_TAG, "Sleeping for ${resetDowntimeSec}s before reconnect (UDP)")
+            repeat(resetDowntimeSec.toInt()) {
+                if (!coroutineContext.isActive) return
+                delay(1000L)
+            }
+        } else if (!didReset) {
+            // error or cancellation -> backoff a little to avoid spin
+            delay(500L)
         }
     }
 }

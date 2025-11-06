@@ -9,6 +9,7 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.*
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.max
 
 class NetworkTestService : Service() {
 
@@ -44,9 +45,16 @@ class NetworkTestService : Service() {
             else -> UdpDirection.BOTH
         }
 
+        val periodSec = intent.getLongExtra("periodSec", PERIOD_MS / 1000L)
+        val resetEverySec = intent.getLongExtra("resetEverySec", 0L)
+        val resetDowntimeSec = intent.getLongExtra("resetDowntimeSec", 0L)
+        val periodMs = max(100L, periodSec * 1000L)
+
         if (running.compareAndSet(false, true)) {
             serviceScope.launch {
-                updateNotification("Starting $mode • $host:$port")
+                updateNotification(
+                    "Starting $mode • $host:$port • every ${periodMs}ms • reset=${resetEverySec}s/↓${resetDowntimeSec}s"
+                )
                 try {
                     when (mode) {
                         "udp" -> {
@@ -54,9 +62,11 @@ class NetworkTestService : Service() {
                             runUdpClient(
                                 host = host,
                                 port = port,
-                                periodMs = PERIOD_MS,
+                                periodMs = periodMs,
                                 readTimeoutMs = READ_TIMEOUT_MS,
-                                direction = udpDirection
+                                direction = udpDirection,
+                                resetEverySec = resetEverySec,
+                                resetDowntimeSec = resetDowntimeSec
                             )
                         }
                         else -> {
@@ -64,9 +74,11 @@ class NetworkTestService : Service() {
                             runTcpClient(
                                 host = host,
                                 port = port,
-                                periodMs = PERIOD_MS,
+                                periodMs = periodMs,
                                 connectTimeoutMs = CONNECT_TIMEOUT_MS,
-                                readTimeoutMs = READ_TIMEOUT_MS
+                                readTimeoutMs = READ_TIMEOUT_MS,
+                                resetEverySec = resetEverySec,
+                                resetDowntimeSec = resetDowntimeSec
                             )
                         }
                     }
