@@ -1,7 +1,10 @@
 package com.example.private_signaling_network_connection_test_app
 
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
+import android.os.PowerManager
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
@@ -26,10 +29,28 @@ class MainActivity : ComponentActivity() {
             var mode by remember { mutableStateOf(Mode.TCP) }
             var udpDirection by remember { mutableStateOf(UdpDirection.BOTH) }
 
-            // New configurable intervals (seconds)
+            // Configurable intervals (seconds)
             var periodSecText by remember { mutableStateOf("1") }
             var resetEverySecText by remember { mutableStateOf("") } // empty = disabled
             var resetDowntimeSecText by remember { mutableStateOf("0") }
+
+            // Background persistence controls
+            var useWakeLock by remember { mutableStateOf(true) }
+            var useWifiLock by remember { mutableStateOf(true) }
+
+            val pm = getSystemService(PowerManager::class.java)
+            var ignoring by remember {
+                mutableStateOf(pm.isIgnoringBatteryOptimizations(packageName))
+            }
+
+            fun requestIgnoreBatteryOptimizations() {
+                if (!pm.isIgnoringBatteryOptimizations(packageName)) {
+                    val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                        data = Uri.parse("package:$packageName")
+                    }
+                    startActivity(intent)
+                }
+            }
 
             MaterialTheme {
                 Box(
@@ -132,8 +153,7 @@ class MainActivity : ComponentActivity() {
                                 ) {
                                     Text(
                                         text = "UDP Direction",
-                                        style = MaterialTheme.typography.titleMedium,
-                                        modifier = Modifier.align(Alignment.CenterHorizontally)
+                                        style = MaterialTheme.typography.titleMedium
                                     )
 
                                     FilterChip(
@@ -155,6 +175,39 @@ class MainActivity : ComponentActivity() {
                                     )
                                 }
                             }
+                        }
+
+                        // --- Background persistence options ---
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.fillMaxWidth(0.95f)
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Checkbox(checked = useWakeLock, onCheckedChange = { useWakeLock = it })
+                                Text("Keep CPU awake (Partial Wake Lock)")
+                            }
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Checkbox(checked = useWifiLock, onCheckedChange = { useWifiLock = it })
+                                Text("Keep Wi‑Fi high performance")
+                            }
+                            Box(
+                                modifier = Modifier.fillMaxWidth(),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                ElevatedButton(
+                                    onClick = {
+                                        requestIgnoreBatteryOptimizations()
+                                        ignoring = pm.isIgnoringBatteryOptimizations(packageName)
+                                    }
+                                ) {
+                                    val txt = if (ignoring)
+                                        "Battery optimization: ALREADY IGNORED"
+                                    else
+                                        "Request battery optimization exemption"
+                                    Text(txt)
+                                }
+                            }
+
                         }
 
                         // --- Start Button ---
@@ -185,6 +238,10 @@ class MainActivity : ComponentActivity() {
                                 intent.putExtra("periodSec", periodSec)
                                 intent.putExtra("resetEverySec", resetEverySec)
                                 intent.putExtra("resetDowntimeSec", resetDowntimeSec)
+
+                                // Locks
+                                intent.putExtra("useWakeLock", useWakeLock)
+                                intent.putExtra("useWifiLock", useWifiLock)
 
                                 startForegroundService(intent)
                                 isRunning = true

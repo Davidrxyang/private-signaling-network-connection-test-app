@@ -11,7 +11,6 @@ import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.SocketTimeoutException
 import kotlin.math.max
-import kotlin.time.Duration.Companion.seconds
 
 private const val TAG = "TCPClient"
 
@@ -35,7 +34,6 @@ suspend fun runTcpClient(
     var attempt = 0
     while (true) {
         var didReset = false
-        val connectStart = System.nanoTime()
         try {
             Socket().use { sock ->
                 sock.connect(InetSocketAddress(host, port), connectTimeoutMs)

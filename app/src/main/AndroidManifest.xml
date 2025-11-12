@@ -12,8 +12,14 @@
     <!-- Android 14+ requires declaring a specific foreground service type -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
-    <!-- Android 13+ runtime permission for posting notifications (so the FG service notification shows) -->
+    <!-- For the ongoing notification (Android 13+) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- Keep CPU awake for long-running background networking -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- Allow user to exempt the app from Doze/App Standby -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <application
         android:allowBackup="true"
@@ -36,7 +42,7 @@
             </intent-filter>
         </activity>
 
-        <!-- Declare your foreground Service -->
+        <!-- Foreground Service that runs the TCP/UDP loops -->
         <service
             android:name=".NetworkTestService"
             android:exported="false"
